@@ -1,122 +1,155 @@
 import pygame
 import math
+import sys
+import config
+import engine
+import interface
+from player import init_game_world, Player, TILE
 
-# --- НАСТРОЙКИ ЭКРАНА REALME 8 PRO ---
 pygame.init()
 info = pygame.display.Info()
 W, H = info.current_w, info.current_h
-
-WIDTH = W
-HEIGHT = int(H * 0.8) 
-OFFSET_Y = (H - HEIGHT) // 2 
-
-sc = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
+sc = pygame.display.set_mode((W, H))
 clock = pygame.time.Clock()
+font = pygame.font.SysFont('Arial', 36, bold=True)
 
-# --- ПАРАМЕТРЫ ДРАЙВА ---
-FPS = 35 
-TILE = 60 
-FOV = math.pi / 3 
-NUM_RAYS = 100 
-PROJ_COEFF = 2.5 * (NUM_RAYS / (2 * math.tan(FOV/2))) * TILE
-SCALE = WIDTH // NUM_RAYS
+world_map, enemies = init_game_world()
+hero = Player()
 
-text_map = [
-    '1111111111111111',
-    '1000100010002001',
-    '1010101011110101',
-    '1000000000000001',
-    '1011111011111011',
-    '1020000020000021',
-    '1111111111111111',
-]
+FPS = config.fps
+speed = config.player_speed
+rot_speed = config.rot_speed
+accel, friction = 0.5, 0.2
 
-world_map = {}
-enemies = []
-for j, row in enumerate(text_map):
-    for i, char in enumerate(row):
-        if char == '1': world_map[(i * TILE, j * TILE)] = 1
-        elif char == '2': enemies.append({'pos': [i * TILE + TILE//2, j * TILE + TILE//2], 'alive': True})
+FOV = math.pi / 3
+NUM_RAYS = 120
+PROJ_COEFF = 3 * (NUM_RAYS / (2 * math.tan(FOV/2))) * TILE
+SCALE = W // NUM_RAYS
 
-px, py = TILE + 15, TILE + 15
-pa = 0
-shot_timer = 0
-speed = 3.5 
-rot_speed = 0.06
+weapon_type, anim_frame, shot_timer, kills = 0, 0, 0, 0
 
-def check_wall(x, y):
-    return (x // TILE * TILE, y // TILE * TILE) in world_map
+jx, jy = 0, 0            
+joystick_active = False  
+joystick_finger_id = None 
+target_speed_val = 0
+dr = 0
+mouse_click = False
 
 while True:
     sc.fill((0, 0, 0))
+    mx, my = pygame.mouse.get_pos()
+
     for event in pygame.event.get():
-        if event.type == pygame.QUIT: exit()
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            mx, my = event.pos
-            if mx > WIDTH * 0.5 and shot_timer == 0:
-                shot_timer = 5
-                for en in enemies:
-                    if en['alive']:
-                        # ИСПРАВЛЕНО: Обращаемся к индексам [0] и [1]
-                        vx, vy = en['pos'][0] - px, en['pos'][1] - py
-                        dist = math.hypot(vx, vy)
-                        angle_to_en = math.atan2(vy, vx)
-                        diff = (angle_to_en - pa + math.pi) % (2 * math.pi) - math.pi
-                        if abs(diff) < 0.25 and dist < 500:
-                            en['alive'] = False
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
 
-    dx, dy, dr = 0, 0, 0
-    if pygame.mouse.get_pressed():
-        mx, my = pygame.mouse.get_pos()
-        if mx < WIDTH * 0.5:
-            if my < OFFSET_Y + HEIGHT * 0.6:
-                dx, dy = speed * math.cos(pa), speed * math.sin(pa)
-            if mx < WIDTH * 0.2: dr = -rot_speed
-            elif WIDTH * 0.3 < mx < WIDTH * 0.5: dr = rot_speed
+        elif event.type in (pygame.FINGERDOWN, pygame.FINGERMOTION):
+            mouse_click = True
+            fx = int(event.x * W)
+            fy = int(event.y * H)
 
-    pa += dr
-    if not check_wall(px + dx, py): px += dx
-    if not check_wall(px, py + dy): py += dy
+            if event.type == pygame.FINGERMOTION and joystick_active and event.finger_id == joystick_finger_id:
+                angle = math.atan2(fy - jy, fx - jx)
+                deg = math.degrees(angle) % 360
 
-    # РЕНДЕР
-    pygame.draw.rect(sc, (5, 5, 10), (0, OFFSET_Y, WIDTH, HEIGHT // 2)) 
-    pygame.draw.rect(sc, (25, 25, 25), (0, OFFSET_Y + HEIGHT // 2, WIDTH, HEIGHT // 2)) 
+                if 292.5 <= deg < 337.5:
+                    target_speed_val = speed
+                    dr = rot_speed
+                    hero.walk_cycle += 0.2
+                elif 202.5 <= deg < 247.5:
+                    target_speed_val = speed
+                    dr = -rot_speed
+                    hero.walk_cycle += 0.2
+                elif 112.5 <= deg < 157.5:
+                    target_speed_val = -speed
+                    dr = -rot_speed
+                    hero.walk_cycle += 0.2
+                elif 22.5 <= deg < 67.5:
+                    target_speed_val = -speed
+                    dr = rot_speed
+                    hero.walk_cycle += 0.2
+                elif 247.5 <= deg < 292.5:
+                    target_speed_val = speed
+                    dr = 0
+                    hero.walk_cycle += 0.2
+                elif 67.5 <= deg < 112.5:
+                    target_speed_val = -speed
+                    dr = 0
+                    hero.walk_cycle += 0.2
+                elif 157.5 <= deg < 202.5:
+                    target_speed_val = 0
+                    dr = -rot_speed
+                else:
+                    target_speed_val = 0
+                    dr = rot_speed
 
-    cur_a = pa - FOV / 2
-    for ray in range(NUM_RAYS):
-        sin_a, cos_a = math.sin(cur_a), math.cos(cur_a)
-        for depth in range(1, 800, 8):
-            tx, ty = px + depth * cos_a, py + depth * sin_a
-            if (tx // TILE * TILE, ty // TILE * TILE) in world_map:
-                depth *= math.cos(pa - cur_a)
-                h = PROJ_COEFF / (depth + 0.0001)
-                c = 255 / (1 + depth * depth * 0.00005)
-                pygame.draw.rect(sc, (c, c // 2, 40), (ray * SCALE, OFFSET_Y + HEIGHT // 2 - h // 2, SCALE, h))
-                break
-            
-            hit_en = False
-            for en in enemies:
-                # ИСПРАВЛЕНО: Координаты X и Y разделены
-                if en['alive'] and abs(tx - en['pos'][0]) < 12 and abs(ty - en['pos'][1]) < 12:
-                    depth *= math.cos(pa - cur_a)
-                    h = PROJ_COEFF / (depth + 0.0001)
-                    pygame.draw.rect(sc, (255, 0, 0), (ray * SCALE, OFFSET_Y + HEIGHT // 2 - h // 2, SCALE, h))
-                    hit_en = True; break
-            if hit_en: break
-        cur_a += FOV / NUM_RAYS
+            elif event.type == pygame.FINGERDOWN:
+                if fy < H * 0.15:
+                    if W * 0.3 < fx < W * 0.5: weapon_type = 0
+                    if W * 0.5 < fx < W * 0.7: weapon_type = 1
 
-    # ОРУЖИЕ И ИНТЕРФЕЙС
-    gy = OFFSET_Y + HEIGHT - 40
-    if shot_timer > 0:
-        pygame.draw.circle(sc, (255, 255, 100), (WIDTH // 2, gy - 150), 60)
-        gy += 30
-        shot_timer -= 1
+                elif fx > W * 0.7 and fy > H * 0.5 and shot_timer == 0:
+                    shot_timer = 15
+                    if weapon_type == 1: anim_frame = 1
+                    for en in enemies:
+                        if en['alive']:
+                            vx, vy = en['pos'][0] - hero.x, en['pos'][1] - hero.y
+                            dist = math.hypot(vx, vy)
+                            diff = (math.atan2(vy, vx) - hero.angle + math.pi) % (2 * math.pi) - math.pi
+                            limit = 600 if weapon_type == 0 else 200
+                            if abs(diff) < 0.5 and dist < limit:
+                                en['alive'] = False
+                                kills += 1
+
+                elif fx <= W * 0.5 and not joystick_active:
+                    jx, jy = fx, fy
+                    joystick_active = True
+                    joystick_finger_id = event.finger_id
+
+        elif event.type == pygame.FINGERUP:
+            if joystick_active and event.finger_id == joystick_finger_id:
+                mouse_click = False
+                joystick_active = False
+                joystick_finger_id = None
+                target_speed_val = 0
+                dr = 0
+
+    # Физика изменения скорости
+    if hero.current_speed < target_speed_val: 
+        hero.current_speed = min(hero.current_speed + accel, target_speed_val)
+    elif hero.current_speed > target_speed_val:
+        hero.current_speed = max(hero.current_speed - accel, target_speed_val)
     
-    pygame.draw.rect(sc, (40, 40, 40), (WIDTH // 2 - 40, gy - 140, 80, 200))
-    pygame.draw.rect(sc, (20, 20, 20), (WIDTH // 2 - 25, gy - 180, 50, 70))
+    # Плавное торможение при отпущенном джойстике
+    if not joystick_active:
+        if hero.current_speed > 0: hero.current_speed = max(hero.current_speed - friction, 0)
+        elif hero.current_speed < 0: hero.current_speed = min(hero.current_speed + friction, 0)
+
+    dx, dy = hero.current_speed * math.cos(hero.angle), hero.current_speed * math.sin(hero.angle)
+    hero.angle += dr
+    if not engine.check_wall(hero.x + dx, hero.y, TILE, world_map): hero.x += dx
+    if not engine.check_wall(hero.x, hero.y + dy, TILE, world_map): hero.y += dy
+
+    # Рассчитываем динамическое покачивание FOV (вперед-назад) при ходьбе
+    # Если персонаж идет, синус будет плавно менять коэффициент проекции
+    if hero.current_speed != 0:
+        # 0.05 — это сила отдаления/приближения (можно увеличить для жесткого эффекта)
+        dynamic_proj = PROJ_COEFF * (1.1 + math.sin(hero.walk_cycle * 1.5) * 0.08)
+    else:
+        dynamic_proj = PROJ_COEFF
+
+    # Передаем измененный dynamic_proj вместо статичного PROJ_COEFF
+    engine.render_world(sc, hero.x, hero.y, hero.angle, TILE, NUM_RAYS, FOV, dynamic_proj, SCALE, W, H, world_map, enemies)
     
-    pygame.draw.circle(sc, (255, 0, 0), (WIDTH // 2, OFFSET_Y + HEIGHT // 2), 6, 1)
-    pygame.draw.circle(sc, (200, 0, 0), (WIDTH - 150, H - 150), 80, 4)
+    bobbing_y = math.sin(hero.walk_cycle) * 10 if hero.current_speed != 0 else 0
+    interface.draw_weapon(sc, W, H, weapon_type, shot_timer, anim_frame, bobbing_y)
+    interface.draw_ui(sc, W, H, font, weapon_type, kills, joystick_active, jx, jy)
+
+    if anim_frame > 0:
+        anim_frame += 1
+        if anim_frame > 12: anim_frame = 0
+    if shot_timer > 0: shot_timer -= 1
 
     pygame.display.flip()
     clock.tick(FPS)
